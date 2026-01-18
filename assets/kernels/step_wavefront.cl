@@ -1,6 +1,6 @@
 __kernel void expand_wave_naive(
     int W, int H,
-    __global const int *wall,
+    __global const int *cost,
     __global uchar *wf_prev,
     __global uchar *wf_next,
     __global int *dist,
@@ -35,11 +35,11 @@ __kernel void expand_wave_naive(
         
         int j = ny*W + nx;
         
-        if (wall[j])
+        if (cost[j] < 0)
             continue;
 
         // Check and add neighbors to next wavefront
-        int old = atomic_cmpxchg(&dist[j], -1, dcurr + 1);
+        int old = atomic_cmpxchg(&dist[j], -1, dcurr + cost[j]);
         if (old == -1) {
             wf_next[j] = 1;
         }
@@ -48,7 +48,7 @@ __kernel void expand_wave_naive(
 
 __kernel void expand_wave_idxs(
     int W, int H, int WF_SIZE,
-    __global const int *wall,
+    __global const int *cost,
     __global int *wf_prev_idxs,
     __global int *wf_next_idxs,
     __global int *dist,
@@ -86,11 +86,11 @@ __kernel void expand_wave_idxs(
         
         int j = ny*W + nx;
         
-        if (wall[j])
+        if (cost[j] < 0)
             continue;
 
         // Check and add neighbors to next wavefront
-        int old = atomic_cmpxchg(&dist[j], -1, dcurr + 1);
+        int old = atomic_cmpxchg(&dist[j], -1, dcurr + cost[j]);
         if (old == -1) {
             wf_next_idxs[4*gidx+k] = j;
         }

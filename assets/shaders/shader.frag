@@ -10,6 +10,10 @@ layout(std430, binding = 1) buffer MyBuffer2 {
     int data_dist[];
 };
 
+layout(std430, binding = 2) buffer MyBuffer3 {
+    int data_visit[];
+};
+
 uniform int imageWidth;
 uniform int imageHeight;
 uniform int maxDist;
@@ -21,9 +25,17 @@ void main() {
 
     if (idx >= imageWidth * imageHeight) discard;
 
-    if (data_wall[idx] == 1) {
+    if (data_visit[idx] == 2) { // marked path
+        outColor = vec4(0.0, 1.0, 0.0, 0.8);
+        return;
+    }
+
+    if (data_wall[idx] < 0) { // wall
         outColor = vec4(0.0, 0.0, 0.0, 1.0);
-    } else {
+        return;
+    }
+
+    {
         // Normalize distance to [0, 1] range — adjust scale as needed
         float t = clamp(float(data_dist[idx]) / float(maxDist), 0.0, 1.0);
 

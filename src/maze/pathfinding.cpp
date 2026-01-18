@@ -11,7 +11,7 @@ bool stepPathfinding(
     cl::CommandQueue& queue,
     cl::Kernel& kernel,
     int targetIdx,
-    const cl::Buffer& wallBuf,
+    const cl::Buffer& costBuf,
     cl::Buffer& prevBuf,
     cl::Buffer& nextBuf,
     cl::Buffer& distBuf,
@@ -26,7 +26,7 @@ bool stepPathfinding(
     kernel.setArg(0, size);
     kernel.setArg(1, size);
     kernel.setArg(2, currentWfSize);
-    kernel.setArg(3, wallBuf);
+    kernel.setArg(3, costBuf);
     kernel.setArg(4, prevBuf);
     kernel.setArg(5, nextBuf);
     kernel.setArg(6, distBuf);

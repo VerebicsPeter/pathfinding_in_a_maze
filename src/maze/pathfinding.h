@@ -15,7 +15,7 @@ namespace Maze {
  * @param queue OpenCL command queue
  * @param kernel OpenCL kernel for wavefront expansion
  * @param targetIdx Target cell index
- * @param wallBuf OpenCL buffer containing wall data
+ * @param costBuf OpenCL buffer containing wall data
  * @param prevBuf OpenCL buffer for previous wavefront
  * @param nextBuf OpenCL buffer for next wavefront
  * @param distBuf OpenCL buffer for distance data
@@ -33,7 +33,7 @@ bool stepPathfinding(
     cl::CommandQueue& queue,
     cl::Kernel& kernel,
     int targetIdx,
-    const cl::Buffer& wallBuf,
+    const cl::Buffer& costBuf,
     cl::Buffer& prevBuf,
     cl::Buffer& nextBuf,
     cl::Buffer& distBuf,

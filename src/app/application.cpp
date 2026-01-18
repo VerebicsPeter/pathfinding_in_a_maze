@@ -1,3 +1,25 @@
+// TODO:
+
+// - Native maze generation
+// - Implement dijkstra and A* using the new cost buffer and 
+// relaxation with bucket based delta stepping:
+// - Visualize dijkstra and A* costs somehow
+
+// in pseudocode (roughly)
+// found = false
+// for bucket in sorted(buckets, "asc"):
+// # the k-th bucket has indices with dist in [k*delta, (k+1)*delta-1]
+// # NOTE: buckets are holding the indices of the current wavefront
+//   while bucket not empty and not found:
+//     # part of the wavefront that is  
+//     found = call("step_bucketed_wavefront", bucket)
+
+// this call means expand ALL nodes IN the bucket,
+//  - it may add new nodes to the same bucket that's why we need while
+//  - it is correct because if it adds the same node to 2 diff buckets
+//  the first one to relax that node WILL be the 'closer' bucket
+//  - it terminates either when target is stopped or when every node is relaxed
+
 #include "application.h"
 #include "camera.h"
 #include "../graphics/shader.h"
@@ -5,7 +27,6 @@
 #include "../graphics/quad.h"
 #include "../compute/cl_context.h"
 #include "../compute/cl_program.h"
-#include "../maze/maze.h"
 #include "../maze/pathfinding.h"
 #include "../utils/file_utils.h"
 
@@ -32,8 +53,9 @@ Application::Application(int width, int height)
     , m_glContext(nullptr)
     , m_running(true)
     , m_pathFound(false)
+    , m_backtracking(false)
     , m_currentStep(0)
-    , m_mazeSize(255)
+    , m_mazeSize(65)
     , m_currentWavefrontSize(1)
 {
     initSDL();
@@ -60,7 +82,7 @@ void Application::initSDL()
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 6);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 
-    m_window = SDL_CreateWindow("Pathfinding Visualization",
+    m_window = SDL_CreateWindow("Pathfinding in a Maze",
                                 SDL_WINDOWPOS_CENTERED,
                                 SDL_WINDOWPOS_CENTERED,
                                 m_width, m_height,
@@ -101,10 +123,9 @@ void Application::initOpenCL()
 void Application::initMaze()
 {
     // Generate maze
-    std::string algorithm = "kruskal";
-    m_hostMazeWalls = Maze::createMaze(m_mazeSize, algorithm);
+    m_hostMazeCosts = Maze::createMaze(m_mazeSize, m_algorithm, false);
 
-    if (m_hostMazeWalls.empty())
+    if (m_hostMazeCosts.empty())
     {
         throw std::runtime_error("Failed to generate maze");
     }
@@ -115,9 +136,9 @@ void Application::initMaze()
     m_targetIdx = toIndex(m_mazeSize - 2, m_mazeSize - 2);
 
     // Create wall buffer for graphics
-    m_wallBuffer = std::make_unique<Graphics::SSBO>(
-        m_hostMazeWalls.size() * sizeof(int32_t),
-        m_hostMazeWalls.data()
+    m_costBuffer = std::make_unique<Graphics::SSBO>(
+        m_hostMazeCosts.size() * sizeof(int32_t),
+        m_hostMazeCosts.data()
     );
 
     // Initialize distance buffer
@@ -129,6 +150,12 @@ void Application::initMaze()
         distances.data()
     );
 
+    std::vector<int32_t> visited(m_mazeSize * m_mazeSize, 0);
+    m_visitBuffer = std::make_unique<Graphics::SSBO>(
+        visited.size() * sizeof(int32_t),
+        visited.data()
+    );
+
     // Initialize OpenCL buffers for pathfinding
     const int maxWfSize = 2 * (std::max(m_mazeSize, m_mazeSize) - 1);
     const int indexArrSize = 4 * maxWfSize;
@@ -138,10 +165,20 @@ void Application::initMaze()
     std::vector<int32_t> nextHost(indexArrSize, -1);
     std::vector<uint8_t> foundFlagHost(1, 0);
 
-    prevHost[0] = m_startIdx;
+    if (!Maze::initializeMazeState(
+            *m_clContext,
+            *m_clProgram,
+            m_hostMazeCosts,
+            m_mazeSize,
+            m_startIdx,
+            m_mazeState
+        ))
+    {
+        throw std::runtime_error("Failed to initialize maze.");
+    }
 
-    // Create OpenCL buffers (stored as class members would be better, but we'll use local for now)
-    // For simplicity, we'll handle this in the update() method
+    m_currentStep = 0;
+    m_currentWavefrontSize = 1;
 }
 
 void Application::initGraphics()
@@ -235,82 +272,55 @@ void Application::handleEvents()
 
 void Application::update()
 {
+    static int currBacktrackingIdx = -1;
+    static int currBacktrackingDst = -1;
+
+    // step backtracking
+    if (m_backtracking) {
+        int neighbors[] = {
+            currBacktrackingIdx - 1,
+            currBacktrackingIdx + 1,
+            currBacktrackingIdx - m_mazeSize,
+            currBacktrackingIdx + m_mazeSize
+        };
+
+        int nextIdx = -1;
+
+        for (int i = 0; i < 4; ++i) {
+            int n = neighbors[i];
+            
+            // bounds check
+            if (n < 0 || n >= m_mazeSize * m_mazeSize)
+                continue;
+            
+            // skip walls and already backtracked
+            if (m_hostMazeCosts[n] < 0 ||
+                m_mazeState.visitedFlag[n])
+                continue;
+
+            if (m_mazeState.distHost[n] >= 0 &&
+                m_mazeState.distHost[n] <= currBacktrackingDst) {
+                currBacktrackingDst = m_mazeState.distHost[n];
+                nextIdx = n;
+            }
+        }
+
+        if (nextIdx == -1) {
+            // stuck, should not happen if path exists
+            m_backtracking = false;
+            std::cout << "Backtracking stuck!" << std::endl;
+        } else {
+            currBacktrackingIdx = nextIdx;
+            m_mazeState.visitedFlag[currBacktrackingIdx] = 2; // mark path 
+            m_visitBuffer->update(sizeof(int32_t) * m_mazeState.visitedFlag.size(), m_mazeState.visitedFlag.data());
+            // done if on start
+            m_backtracking = currBacktrackingIdx != m_startIdx;
+            std::cout << "Backtracking @" << currBacktrackingIdx << "\n";
+        }
+    }
+
     if (m_pathFound)
         return;
-
-    // We need to maintain OpenCL buffers across frames
-    // For simplicity, we'll recreate them each time (inefficient but works)
-    // A better approach would be to store them as class members
-    
-    static bool initialized = false;
-    static cl::Buffer wallBuf;
-    static cl::Buffer prevBuf;
-    static cl::Buffer nextBuf;
-    static cl::Buffer distBuf;
-    static cl::Buffer foundFlagBuf;
-    static std::vector<int32_t> prevHost;
-    static std::vector<int32_t> nextHost;
-    static std::vector<int32_t> distHost;
-    static std::vector<uint8_t> foundFlagHost;
-    static cl::Kernel kernel;
-
-    if (!initialized)
-    {
-        // Initialize buffers
-        // Wall buffer is already generated in initMaze
-        
-        const int maxWfSize = 2 * (std::max(m_mazeSize, m_mazeSize) - 1);
-        const int indexArrSize = 4 * maxWfSize;
-
-        prevHost.resize(indexArrSize, -1);
-        nextHost.resize(indexArrSize, -1);
-        distHost.resize(m_mazeSize * m_mazeSize, -1);
-        foundFlagHost.resize(1, 0);
-
-        distHost[m_startIdx] = 0;
-        prevHost[0] = m_startIdx;
-
-        // Create OpenCL buffers
-        wallBuf = cl::Buffer(
-            m_clContext->getContext(),
-            CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-            sizeof(int32_t) * m_hostMazeWalls.size(),
-            m_hostMazeWalls.data()
-        );
-
-        prevBuf = cl::Buffer(
-            m_clContext->getContext(),
-            CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-            sizeof(int32_t) * prevHost.size(),
-            prevHost.data()
-        );
-
-        nextBuf = cl::Buffer(
-            m_clContext->getContext(),
-            CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-            sizeof(int32_t) * nextHost.size(),
-            nextHost.data()
-        );
-
-        distBuf = cl::Buffer(
-            m_clContext->getContext(),
-            CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-            sizeof(int32_t) * distHost.size(),
-            distHost.data()
-        );
-
-        foundFlagBuf = cl::Buffer(
-            m_clContext->getContext(),
-            CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-            sizeof(uint8_t) * foundFlagHost.size(),
-            foundFlagHost.data()
-        );
-
-        // Create kernel
-        kernel = cl::Kernel(m_clProgram->getProgram(), "expand_wave_idxs");
-
-        initialized = true;
-    }
 
     // Run pathfinding step
     m_pathFound = Maze::stepPathfinding(
@@ -318,29 +328,124 @@ void Application::update()
         m_mazeSize,
         m_currentWavefrontSize,
         m_clContext->getQueue(),
-        kernel,
+        m_mazeState.kernel,
         m_targetIdx,
-        wallBuf,
-        prevBuf,
-        nextBuf,
-        distBuf,
-        foundFlagBuf,
-        prevHost,
-        nextHost,
-        distHost,
-        foundFlagHost
+        m_mazeState.costBuf,
+        m_mazeState.prevBuf,
+        m_mazeState.nextBuf,
+        m_mazeState.distBuf,
+        m_mazeState.foundFlagBuf,
+        m_mazeState.prevHost,
+        m_mazeState.nextHost,
+        m_mazeState.distHost,
+        m_mazeState.foundFlagHost
     );
 
     // Update distance buffer for rendering
     m_clContext->getQueue().enqueueReadBuffer(
-        distBuf,
+        m_mazeState.distBuf,
         CL_TRUE,
         0,
-        sizeof(int32_t) * distHost.size(),
-        distHost.data()
+        sizeof(int32_t) * m_mazeState.distHost.size(),
+        m_mazeState.distHost.data()
     );
     
-    m_distBuffer->update(sizeof(int32_t) * distHost.size(), distHost.data());
+    m_distBuffer->update(
+        sizeof(int32_t) * m_mazeState.distHost.size(),
+        m_mazeState.distHost.data());
+    
+    if (m_pathFound) {
+        m_backtracking = true;
+        std::cout << "Backtracking starting...\n";
+        currBacktrackingIdx = m_targetIdx;
+        currBacktrackingDst = m_mazeState.distHost[m_targetIdx];
+    }
+}
+
+void Application::renderImgui()
+{
+    auto onRestart = [&]() {
+        // Reinitialize state
+        if (!Maze::initializeMazeState(
+                *m_clContext,
+                *m_clProgram,
+                m_hostMazeCosts,
+                m_mazeSize,
+                m_startIdx,
+                m_mazeState
+            ))
+        {
+            throw std::runtime_error("Failed to initialize maze.");
+        }
+
+        // Reset wavefront / pathfinding trackers
+        const int maxWfSize = 2 * (std::max(m_mazeSize, m_mazeSize) - 1);
+        const int indexArrSize = 4 * maxWfSize;
+
+        m_mazeState.prevHost.assign(indexArrSize, -1);
+        m_mazeState.nextHost.assign(indexArrSize, -1);
+        m_mazeState.distHost.assign(m_mazeSize * m_mazeSize, -1);
+        m_mazeState.distHost[m_startIdx] = 0;
+        m_mazeState.prevHost[0] = m_startIdx;
+        m_mazeState.foundFlagHost.assign(1, 0);
+
+        // Update OpenCL buffers to match
+        m_clContext->getQueue().enqueueWriteBuffer(m_mazeState.distBuf, CL_TRUE, 0,
+            sizeof(int32_t) * m_mazeState.distHost.size(), m_mazeState.distHost.data());
+        m_clContext->getQueue().enqueueWriteBuffer(m_mazeState.prevBuf, CL_TRUE, 0,
+            sizeof(int32_t) * m_mazeState.prevHost.size(), m_mazeState.prevHost.data());
+        m_clContext->getQueue().enqueueWriteBuffer(m_mazeState.nextBuf, CL_TRUE, 0,
+            sizeof(int32_t) * m_mazeState.nextHost.size(), m_mazeState.nextHost.data());
+        m_clContext->getQueue().enqueueWriteBuffer(m_mazeState.foundFlagBuf, CL_TRUE, 0,
+            sizeof(uint8_t), m_mazeState.foundFlagHost.data());
+
+        // Reset app-level counters
+        m_currentStep = 0;
+        m_currentWavefrontSize = 1;
+        m_pathFound = false;
+        m_backtracking = false;
+
+        // reset backtracking visualization
+        m_mazeState.visitedFlag.assign(m_mazeSize * m_mazeSize, 0);
+        m_visitBuffer->update(sizeof(int32_t) * m_mazeState.visitedFlag.size(), m_mazeState.visitedFlag.data());
+    };
+
+    // Selected algorithm
+    const char* algorithms[] = { "depthfs", "kruskal" };
+    int selectedAlgoIdx = (m_algorithm == "depthfs") ? 0 : 1;
+
+    // Render ImGui
+    // Start the Dear ImGui frame
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplSDL2_NewFrame();
+    ImGui::NewFrame();
+
+    ImGui::Begin("Stats");
+        ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+    ImGui::End();
+
+    ImGui::Begin("Debug");
+        if (ImGui::Combo("Maze Algo", &selectedAlgoIdx, algorithms, IM_ARRAYSIZE(algorithms))) {
+            m_algorithm = algorithms[selectedAlgoIdx];
+        }
+
+        ImGui::Text("Gen algorithm: %s", m_algorithm.c_str());
+
+        ImGui::InputInt("Maze Size", &m_mazeSize, 1, 25);
+
+        if (ImGui::Button("Restart Map")) {
+            initMaze();
+            initGraphics();
+            onRestart();
+        }
+        
+        if (ImGui::Button("Restart Run")) {
+            onRestart();
+        }
+    ImGui::End();
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
 void Application::render()
@@ -361,23 +466,14 @@ void Application::render()
     m_shader->setInt("maxDist", ++m_currentStep);
 
     // Bind buffers
-    m_wallBuffer->bind(0);
+    m_costBuffer->bind(0);
     m_distBuffer->bind(1);
+    m_visitBuffer->bind(2);
 
     // Draw
     m_quad->draw();
 
-    // Render ImGui
-    // Start the Dear ImGui frame
-    // We need to start frames for both the platform backend (SDL2) and the renderer backend (OpenGL3)
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplSDL2_NewFrame();
-    ImGui::NewFrame();
-
-    ImGui::ShowDemoWindow();
-
-    ImGui::Render();
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    renderImgui();  
 
     SDL_GL_SwapWindow(m_window);
 }

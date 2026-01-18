@@ -3,6 +3,7 @@
 #include <SDL2/SDL.h>
 #include <memory>
 #include <vector>
+#include "../maze/maze.h"
 
 // Forward declarations
 namespace Graphics {
@@ -53,6 +54,7 @@ private:
     void handleEvents();
     void update();
     void render();
+    void renderImgui();
     void cleanup();
 
     // Window properties
@@ -67,26 +69,31 @@ private:
 
     // Graphics
     std::unique_ptr<Graphics::Shader> m_shader;
-    std::unique_ptr<Graphics::SSBO> m_wallBuffer;
+    std::unique_ptr<Graphics::SSBO> m_costBuffer;
     std::unique_ptr<Graphics::SSBO> m_distBuffer;
+    std::unique_ptr<Graphics::SSBO> m_visitBuffer; // ssbo for backtracking visited state
     std::unique_ptr<Graphics::Quad> m_quad;
     std::unique_ptr<Camera2D> m_camera;
 
     // Application state
     bool m_running;
     bool m_pathFound;
+    bool m_backtracking;
     int m_currentStep;
+
+    std::string m_algorithm = "kruskal"; // maze gen algo
 
     // Maze data
     int m_mazeSize;
     int m_startIdx;
     int m_targetIdx;
+    Maze::MazeState m_mazeState;
     
     // Pathfinding state
     int m_currentWavefrontSize;
 
     // Maze memory
-    std::vector<int32_t> m_hostMazeWalls;
+    std::vector<int32_t> m_hostMazeCosts;
 };
 
 } // namespace App
