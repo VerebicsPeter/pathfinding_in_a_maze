@@ -24,27 +24,22 @@ find_package(OpenGL REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(OpenCL REQUIRED)
 
-# ImGui (Docking Branch)
-include(FetchContent)
-FetchContent_Declare(
-    imgui
-    GIT_REPOSITORY https://github.com/ocornut/imgui
-    GIT_TAG docking
-)
-FetchContent_MakeAvailable(imgui)
+# ImGui (Docking Branch) - Local thirdparty dependency
+set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/thirdparty/imgui)
 
 # Create ImGui library target
 add_library(imgui STATIC
-    ${imgui_SOURCE_DIR}/imgui.cpp
-    ${imgui_SOURCE_DIR}/imgui_demo.cpp
-    ${imgui_SOURCE_DIR}/imgui_draw.cpp
-    ${imgui_SOURCE_DIR}/imgui_tables.cpp
-    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_demo.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_sdl2.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
 )
 target_include_directories(imgui PUBLIC 
-    ${imgui_SOURCE_DIR} 
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
     ${SDL2_INCLUDE_DIRS}
     ${OPENGL_INCLUDE_DIR}
 )
