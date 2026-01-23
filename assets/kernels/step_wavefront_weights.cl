@@ -35,13 +35,26 @@ __kernel void expand_wave_naive(
         
         int j = ny*W + nx;
         
+        // Skip walls
         if (cost[j] < 0)
             continue;
 
-        // Check and add neighbors to next wavefront
-        int old = atomic_cmpxchg(&dist[j], -1, dcurr + cost[j]);
-        if (old == -1) {
+        int newDist = dcurr + cost[j];
+        
+        // Handle initialization from -1
+        int oldDist = atomic_cmpxchg(&dist[j], -1, newDist);
+        
+        // If it was -1, we successfully set it.
+        // If it wasn't -1, we try to relax it with atomic_min.
+        if (oldDist == -1) {
             wf_next[j] = 1;
+        } else
+        // NOTE: only try to write if it is smaller
+        if (newDist < oldDist) {
+            int oldDist2 = atomic_min(&dist[j], newDist);
+            if (newDist < oldDist2) {
+                wf_next[j] = 1;
+            }
         }
     }
 }
@@ -86,13 +99,23 @@ __kernel void expand_wave_idxs(
         
         int j = ny*W + nx;
         
+        // Skip walls
         if (cost[j] < 0)
             continue;
 
-        // Check and add neighbors to next wavefront
-        int old = atomic_cmpxchg(&dist[j], -1, dcurr + cost[j]);
-        if (old == -1) {
+        int newDist = dcurr + cost[j];
+
+        // Handle initialization from -1
+        int oldDist = atomic_cmpxchg(&dist[j], -1, newDist);
+
+        if (oldDist == -1) {
             wf_next_idxs[4*gidx+k] = j;
+        } else
+        if (newDist < oldDist) {
+            int oldDist2 = atomic_min(&dist[j], newDist);
+            if (newDist < oldDist2) {
+                wf_next_idxs[4*gidx+k] = j;
+            }
         }
     }
 }

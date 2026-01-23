@@ -65,7 +65,8 @@ private:
 
     // OpenCL
     std::unique_ptr<Compute::CLContext> m_clContext;
-    std::unique_ptr<Compute::CLProgram> m_clProgram;
+    std::unique_ptr<Compute::CLProgram> m_clProgramUniform;
+    std::unique_ptr<Compute::CLProgram> m_clProgramWeights;
 
     // Graphics
     std::unique_ptr<Graphics::Shader> m_shader;
@@ -76,12 +77,14 @@ private:
     std::unique_ptr<Camera2D> m_camera;
 
     // Application state
-    bool m_running;
+    bool m_isRunning;
+    bool m_isBacktracking;
     bool m_pathFound;
-    bool m_backtracking;
     int m_currentStep;
-
+    
+    // Maze gen settings
     std::string m_algorithm = "kruskal"; // maze gen algo
+    bool m_useWeightedKernel;
 
     // Maze data
     int m_mazeSize;

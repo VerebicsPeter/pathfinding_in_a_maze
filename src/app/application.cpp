@@ -1,25 +1,3 @@
-// TODO:
-
-// - Native maze generation
-// - Implement dijkstra and A* using the new cost buffer and 
-// relaxation with bucket based delta stepping:
-// - Visualize dijkstra and A* costs somehow
-
-// in pseudocode (roughly)
-// found = false
-// for bucket in sorted(buckets, "asc"):
-// # the k-th bucket has indices with dist in [k*delta, (k+1)*delta-1]
-// # NOTE: buckets are holding the indices of the current wavefront
-//   while bucket not empty and not found:
-//     # part of the wavefront that is  
-//     found = call("step_bucketed_wavefront", bucket)
-
-// this call means expand ALL nodes IN the bucket,
-//  - it may add new nodes to the same bucket that's why we need while
-//  - it is correct because if it adds the same node to 2 diff buckets
-//  the first one to relax that node WILL be the 'closer' bucket
-//  - it terminates either when target is stopped or when every node is relaxed
-
 #include "application.h"
 #include "camera.h"
 #include "../graphics/shader.h"
@@ -51,10 +29,11 @@ Application::Application(int width, int height)
     , m_height(height)
     , m_window(nullptr)
     , m_glContext(nullptr)
-    , m_running(true)
+    , m_isRunning(true)
+    , m_isBacktracking(false)
     , m_pathFound(false)
-    , m_backtracking(false)
     , m_currentStep(0)
+    , m_useWeightedKernel(false)
     , m_mazeSize(65)
     , m_currentWavefrontSize(1)
 {
@@ -113,8 +92,15 @@ void Application::initOpenGL()
 void Application::initOpenCL()
 {
     m_clContext = std::make_unique<Compute::CLContext>(m_window, 0, 0);
-    m_clProgram = std::make_unique<Compute::CLProgram>(
-        "assets/kernels/step_wavefront.cl",
+
+    m_clProgramUniform = std::make_unique<Compute::CLProgram>(
+        "assets/kernels/step_wavefront_uniform.cl",
+        m_clContext->getContext(),
+        m_clContext->getDevice()
+    );
+
+    m_clProgramWeights = std::make_unique<Compute::CLProgram>(
+        "assets/kernels/step_wavefront_weights.cl",
         m_clContext->getContext(),
         m_clContext->getDevice()
     );
@@ -123,7 +109,7 @@ void Application::initOpenCL()
 void Application::initMaze()
 {
     // Generate maze
-    m_hostMazeCosts = Maze::createMaze(m_mazeSize, m_algorithm, false);
+    m_hostMazeCosts = Maze::createMaze(m_mazeSize, m_algorithm, m_useWeightedKernel);
 
     if (m_hostMazeCosts.empty())
     {
@@ -165,9 +151,12 @@ void Application::initMaze()
     std::vector<int32_t> nextHost(indexArrSize, -1);
     std::vector<uint8_t> foundFlagHost(1, 0);
 
+    Compute::CLProgram& clProgram = m_useWeightedKernel 
+        ? *m_clProgramWeights
+        : *m_clProgramUniform;
     if (!Maze::initializeMazeState(
             *m_clContext,
-            *m_clProgram,
+            clProgram,
             m_hostMazeCosts,
             m_mazeSize,
             m_startIdx,
@@ -235,7 +224,7 @@ void Application::handleEvents()
 
         if (event.type == SDL_QUIT)
         {
-            m_running = false;
+            m_isRunning = false;
         }
         else if (event.type == SDL_KEYDOWN)
         {
@@ -263,7 +252,7 @@ void Application::handleEvents()
                 m_camera->adjustZoom(1.0f / zoomFactor);
                 break;
             case SDLK_ESCAPE:
-                m_running = false;
+                m_isRunning = false;
                 break;
             }
         }
@@ -276,7 +265,7 @@ void Application::update()
     static int currBacktrackingDst = -1;
 
     // step backtracking
-    if (m_backtracking) {
+    if (m_isBacktracking) {
         int neighbors[] = {
             currBacktrackingIdx - 1,
             currBacktrackingIdx + 1,
@@ -307,14 +296,14 @@ void Application::update()
 
         if (nextIdx == -1) {
             // stuck, should not happen if path exists
-            m_backtracking = false;
+            m_isBacktracking = false;
             std::cout << "Backtracking stuck!" << std::endl;
         } else {
             currBacktrackingIdx = nextIdx;
             m_mazeState.visitedFlag[currBacktrackingIdx] = 2; // mark path 
             m_visitBuffer->update(sizeof(int32_t) * m_mazeState.visitedFlag.size(), m_mazeState.visitedFlag.data());
             // done if on start
-            m_backtracking = currBacktrackingIdx != m_startIdx;
+            m_isBacktracking = currBacktrackingIdx != m_startIdx;
             std::cout << "Backtracking @" << currBacktrackingIdx << "\n";
         }
     }
@@ -355,7 +344,7 @@ void Application::update()
         m_mazeState.distHost.data());
     
     if (m_pathFound) {
-        m_backtracking = true;
+        m_isBacktracking = true;
         std::cout << "Backtracking starting...\n";
         currBacktrackingIdx = m_targetIdx;
         currBacktrackingDst = m_mazeState.distHost[m_targetIdx];
@@ -365,10 +354,13 @@ void Application::update()
 void Application::renderImgui()
 {
     auto onRestart = [&]() {
+        Compute::CLProgram& clProgram = m_useWeightedKernel 
+            ? *m_clProgramWeights 
+            : *m_clProgramUniform;
         // Reinitialize state
         if (!Maze::initializeMazeState(
                 *m_clContext,
-                *m_clProgram,
+                clProgram,
                 m_hostMazeCosts,
                 m_mazeSize,
                 m_startIdx,
@@ -403,7 +395,7 @@ void Application::renderImgui()
         m_currentStep = 0;
         m_currentWavefrontSize = 1;
         m_pathFound = false;
-        m_backtracking = false;
+        m_isBacktracking = false;
 
         // reset backtracking visualization
         m_mazeState.visitedFlag.assign(m_mazeSize * m_mazeSize, 0);
@@ -411,8 +403,11 @@ void Application::renderImgui()
     };
 
     // Selected algorithm
-    const char* algorithms[] = { "depthfs", "kruskal" };
-    int selectedAlgoIdx = (m_algorithm == "depthfs") ? 0 : 1;
+    const char* algorithms[] = { "depthfs", "kruskal", "test" };
+    int selectedAlgoIdx =
+        (m_algorithm == "depthfs") ? 0 : 
+        (m_algorithm == "kruskal") ? 1 :
+        2;
 
     // Render ImGui
     // Start the Dear ImGui frame
@@ -430,6 +425,7 @@ void Application::renderImgui()
         }
 
         ImGui::Text("Gen algorithm: %s", m_algorithm.c_str());
+        ImGui::Checkbox("Use weighted kernel", &m_useWeightedKernel);
 
         ImGui::InputInt("Maze Size", &m_mazeSize, 1, 25);
 
@@ -480,7 +476,7 @@ void Application::render()
 
 void Application::run()
 {
-    while (m_running)
+    while (m_isRunning)
     {
         handleEvents();
         update();

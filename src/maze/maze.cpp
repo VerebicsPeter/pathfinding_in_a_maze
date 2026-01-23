@@ -6,8 +6,19 @@
 
 namespace Maze {
 
-std::vector<int32_t> createMaze(unsigned int size, const std::string& algorithm, bool randomCost)
+std::vector<int32_t> createMaze(
+    unsigned int size, const std::string& algorithm, bool randomCost)
 {
+    if (algorithm == "test") {
+        return {
+            -1,  -1,  -1,  -1,  -1,
+            -1,   1,   2,   3,  -1,
+            -1,   1,  -1,   4,  -1,
+            -1,   1,   1,   1,  -1,
+            -1,  -1,  -1,  -1,  -1
+        };
+    }
+
     char cmd[256];
     std::snprintf(cmd, sizeof(cmd), "python gen_maze.py %u \"%s\"", size, algorithm.c_str());
     int ret = std::system(cmd);

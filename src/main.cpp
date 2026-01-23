@@ -6,7 +6,7 @@ int main()
 {
     try
     {
-        const int WINDOW_WIDTH = 1600;
+        const int WINDOW_WIDTH  = 1600;
         const int WINDOW_HEIGHT = 900;
 
         App::Application app(WINDOW_WIDTH, WINDOW_HEIGHT);
